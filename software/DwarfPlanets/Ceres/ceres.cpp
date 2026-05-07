@@ -35,6 +35,7 @@
 #include "daisy_petal.h"
 #include "daisysp.h"
 #include "funbox.h"
+#include "presetManager.h"
 #include <cmath>
 
 using namespace daisy;
@@ -83,53 +84,9 @@ bool midiModeActive = false;
 int  midiMode       = 0;
 
 // ============================================================
-// MIDI Preset System — 128 presets stored in QSPI flash
+// MIDI Preset System — reusable PresetManager (include/presetManager.h)
 // ============================================================
-static const uint8_t PRESET_MAGIC = 0xA5;  // Marks a preset slot as initialized
-
-struct Preset {
-    uint8_t magic;       // PRESET_MAGIC if this slot has been written
-    bool    bypass;
-    int     effectMode;
-    float   knobs[6];    // Raw 0-1 knob values (pre-parameter-mapping)
-};
-
-struct PresetBank {
-    Preset presets[128];
-
-    bool operator!=(const PresetBank& a) const {
-        for (int i = 0; i < 128; i++) {
-            if (a.presets[i].magic != presets[i].magic) return true;
-            if (a.presets[i].bypass != presets[i].bypass) return true;
-            if (a.presets[i].effectMode != presets[i].effectMode) return true;
-            for (int k = 0; k < 6; k++) {
-                if (a.presets[i].knobs[k] != presets[i].knobs[k]) return true;
-            }
-        }
-        return false;
-    }
-};
-
-PersistentStorage<PresetBank> SavedPresets(hw.seed.qspi);
-
-// Program mode state
-bool     programMode      = false;
-bool     longHoldTriggered = false; // Prevents bypass toggle on release after long hold
-bool     triggerSave       = false;
-bool     confirmBlinking   = false;
-int      confirmBlinkCount = 0;
-uint32_t confirmBlinkTimer = 0;
-uint32_t blinkTimer        = 0;
-bool     led2BlinkState    = false;
-
-// Preset recall state
-bool     usePreset         = false;
-float    presetKnobs[6]    = {};    // Shadow knob values from recalled preset
-int      presetMode        = 0;     // Mode from recalled preset
-bool     presetModeActive  = false; // True when preset overrides the physical switch mode
-
-// Knob-moved threshold for exiting preset override
-static const float KNOB_MOVE_THRESHOLD = 0.05f;
+PresetManager presets;
 
 // ============================================================
 
@@ -227,9 +184,7 @@ void updateSwitch1() // left=Waveshape, center=Wavefold, right=Phaser
         effectMode = 1; // Wavefold
     }
     // Physical switch moved — clear preset and MIDI mode overrides
-    if (presetModeActive) {
-        presetModeActive = false;
-    }
+    presets.OnSwitchChanged();
     if (midiModeActive) {
         midiModeActive = false;
     }
@@ -260,33 +215,7 @@ void updateSwitch3() // reserved
 
 void UpdateButtons()
 {
-    // Detect 3-second hold on footswitch 1 to enter/exit program mode
-    if (hw.switches[Funbox::FOOTSWITCH_1].Pressed()) {
-        if (hw.switches[Funbox::FOOTSWITCH_1].TimeHeldMs() >= 3000 && !longHoldTriggered) {
-            longHoldTriggered = true;
-            programMode = !programMode;
-            if (programMode) {
-                // Entering program mode — start LED1 blink
-                blinkTimer = System::GetNow();
-                led2BlinkState = true;
-            }
-            // If exiting program mode via hold, no save — just cancel
-        }
-    }
-
-    // On release: short press = bypass toggle, long hold = already handled above
-    if (hw.switches[Funbox::FOOTSWITCH_1].FallingEdge()) {
-        if (longHoldTriggered) {
-            // Release after long hold — suppress bypass toggle
-            longHoldTriggered = false;
-        } else {
-            // Short press — toggle bypass (works in both normal and program mode)
-            bypass = !bypass;
-            led2.Set(bypass ? 0.0f : 1.0f);
-        }
-    }
-
-    led2.Update();
+    presets.UpdateFootswitch(hw, bypass, led2);
 }
 
 
@@ -334,18 +263,6 @@ void UpdateSwitches()
 }
 
 
-// Helper: check if a knob has moved significantly from its preset shadow value
-bool knobMoved(int knobIdx) {
-    static const int knobMap[6] = {
-        Funbox::KNOB_1, Funbox::KNOB_2, Funbox::KNOB_3,
-        Funbox::KNOB_4, Funbox::KNOB_5, Funbox::KNOB_6
-    };
-    float current = hw.knob[knobMap[knobIdx]].Value();
-    float diff = current - presetKnobs[knobIdx];
-    if (diff < 0.0f) diff = -diff;
-    return diff > KNOB_MOVE_THRESHOLD;
-}
-
 
 static void AudioCallback(AudioHandle::InputBuffer  in,
                           AudioHandle::OutputBuffer out,
@@ -358,15 +275,7 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
     UpdateSwitches();
 
     // If using a preset, check if any knob has moved to exit preset mode
-    if (usePreset) {
-        for (int k = 0; k < 6; k++) {
-            if (knobMoved(k)) {
-                usePreset = false;
-                presetModeActive = false;
-                break;
-            }
-        }
-    }
+    presets.CheckKnobOverride();
 
     // Check if physical knobs have moved to reclaim from MIDI CC override
     // Knob-to-CC mapping: Knob1→CC[0](VOL), Knob2→CC[2](FREQ), Knob3→CC[3](RES), Knob4→CC[1](SENS)
@@ -385,31 +294,29 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
     }
 
     // Apply preset mode override (preset's effectMode overrides physical switch)
-    if (presetModeActive) {
-        effectMode = presetMode;
-    }
+    effectMode = presets.GetEffectMode(effectMode);
     // Apply MIDI mode override (highest priority)
     if (midiModeActive) {
         effectMode = midiMode;
     }
 
     // Read knobs — use preset values if active, otherwise live hardware
-    if (usePreset) {
+    if (presets.usePreset) {
         // Map raw 0-1 preset knob values through the same ranges as the Parameter objects
         // Knob 1: LEVEL — linear 0-1.5
-        vLevel    = presetKnobs[0] * 1.5f;
+        vLevel    = presets.presetKnobs[0] * 1.5f;
         // Knob 2: FREQ — log 100-8000 (mode 0/1), log 40-5000 (mode 2)
-        float k2 = presetKnobs[1];
+        float k2 = presets.presetKnobs[1];
         vFreq     = 100.0f * powf(8000.0f / 100.0f, k2);
         vFreqWF   = 100.0f * powf(8000.0f / 100.0f, k2);
         vPhaserFreq = 40.0f * powf(5000.0f / 40.0f, k2);
         // Knob 3: RES linear 0-0.99, FOLD exp 1-12, FDBK linear 0-0.95
-        float k3 = presetKnobs[2];
+        float k3 = presets.presetKnobs[2];
         vRes      = k3 * 0.99f;
         vFold     = 1.0f + (12.0f - 1.0f) * k3 * k3; // exponential approximation
         vPhaserFb = k3 * 0.95f;
         // Knob 4: SENSE — log 1-20
-        float k4 = presetKnobs[3];
+        float k4 = presets.presetKnobs[3];
         vSense    = 1.0f * powf(20.0f / 1.0f, k4);
     } else {
         vFreq  = pFreq.Process();
@@ -609,7 +516,7 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
     }
 
     // Compute LED1 target brightness (actual hardware update in main loop)
-    if (!programMode && !confirmBlinking) {
+    if (!presets.IsBlinking()) {
         if (!bypass) {
             float envLed = 0.0f;
             if (externalEnv > EXPRESSION_THRESHOLD) {
@@ -696,61 +603,12 @@ void HandleMidiMessage(MidiEvent m)
             ProgramChangeEvent pc = m.AsProgramChange();
             uint8_t prog = pc.program;  // 0-127
 
-            if (programMode) {
-                // ---- SAVE current settings to this program slot ----
-                // Clear MIDI CC state so save captures clean physical state
-                for (int c = 0; c < 4; c++) midiCCActive[c] = false;
-                midiModeActive = false;
-                midiEnvActive  = false;
+            // Clear MIDI CC/mode/env overrides before save or recall
+            for (int c = 0; c < 4; c++) midiCCActive[c] = false;
+            midiModeActive = false;
+            midiEnvActive  = false;
 
-                PresetBank &bank = SavedPresets.GetSettings();
-                Preset &slot = bank.presets[prog];
-
-                slot.magic      = PRESET_MAGIC;
-                slot.bypass     = bypass;
-                slot.effectMode = effectMode;
-                slot.knobs[0]   = hw.knob[Funbox::KNOB_1].Value();
-                slot.knobs[1]   = hw.knob[Funbox::KNOB_2].Value();
-                slot.knobs[2]   = hw.knob[Funbox::KNOB_3].Value();
-                slot.knobs[3]   = hw.knob[Funbox::KNOB_4].Value();
-                slot.knobs[4]   = hw.knob[Funbox::KNOB_5].Value();
-                slot.knobs[5]   = hw.knob[Funbox::KNOB_6].Value();
-
-                triggerSave = true;
-                programMode = false;
-
-                // Start confirm blink sequence (3 fast blinks at 100ms)
-                confirmBlinking   = true;
-                confirmBlinkCount = 0;
-                confirmBlinkTimer = System::GetNow();
-                led2BlinkState    = true;
-            }
-            else
-            {
-                // ---- RECALL preset from this program slot ----
-                PresetBank &bank = SavedPresets.GetSettings();
-                Preset &slot = bank.presets[prog];
-
-                if (slot.magic != PRESET_MAGIC)
-                    break;  // Uninitialized slot — ignore
-
-                // Clear all MIDI CC overrides — preset takes full control
-                for (int c = 0; c < 4; c++) midiCCActive[c] = false;
-                midiModeActive = false;
-                midiEnvActive  = false;
-
-                bypass      = slot.bypass;
-                presetMode  = slot.effectMode;
-                effectMode  = slot.effectMode;
-                presetModeActive = true;
-
-                for (int k = 0; k < 6; k++)
-                    presetKnobs[k] = slot.knobs[k];
-
-                usePreset = true;
-
-                led2.Set(bypass ? 0.0f : 1.0f);
-            }
+            presets.HandleProgramChange(prog, bypass, effectMode, led2);
             break;
         }
         default: break;
@@ -855,9 +713,8 @@ int main(void)
     led1.SetSampleRate(200.0f);  // LED1 updated at ~200 Hz from main loop
     led1.Update();
 
-    // Initialize preset storage with empty defaults (all magic=0 = uninitialized)
-    PresetBank defaultBank = {};
-    SavedPresets.Init(defaultBank);
+    // Initialize preset manager (128 slots in QSPI flash)
+    presets.Init(hw);
 
     // Init MIDI
     hw.InitMidi();
@@ -900,40 +757,13 @@ int main(void)
         }
 
         // Persist preset bank to QSPI flash after save
-        if (triggerSave) {
-            SavedPresets.Save();
-            triggerSave = false;
-        }
+        presets.FlushIfNeeded();
 
         // LED1 update at ~200 Hz (every 5ms) — decoupled from audio ISR to prevent PWM coupling
         uint32_t now = System::GetNow();
         if (now - led1UpdateTimer >= 5) {
             led1UpdateTimer = now;
-
-            if (programMode && !confirmBlinking) {
-                // Program mode blink (500ms toggle)
-                if (now - blinkTimer >= 500) {
-                    blinkTimer = now;
-                    led2BlinkState = !led2BlinkState;
-                }
-                led1.Set(led2BlinkState ? 1.0f : 0.0f);
-            } else if (confirmBlinking) {
-                // Confirm blink after save (3 blinks at 100ms on/off)
-                if (now - confirmBlinkTimer >= 100) {
-                    confirmBlinkTimer = now;
-                    led2BlinkState = !led2BlinkState;
-                    if (!led2BlinkState) {
-                        confirmBlinkCount++;
-                        if (confirmBlinkCount >= 3) {
-                            confirmBlinking = false;
-                        }
-                    }
-                }
-                led1.Set(led2BlinkState ? 1.0f : 0.0f);
-            } else {
-                // Normal envelope indicator (value computed in audio callback)
-                led1.Set(led1Target);
-            }
+            led1.Set(presets.GetLedBrightness(led1Target));
             led1.Update();
         }
 
