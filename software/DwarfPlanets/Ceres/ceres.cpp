@@ -19,13 +19,13 @@
 // Footswitch 1:   Short press = Bypass toggle; Hold 3s = Enter/exit program mode
 //
 // MIDI CC Control:
-//   CC18: VOL      0–127 → 0.0–1.5 linear
-//   CC19: SENS     0–127 → 1.0–20.0 logarithmic
-//   CC20: FREQ     0–127 → log-mapped per mode (100–8000 / 40–5000)
-//   CC21: RES      0–127 → mode-dependent (0–0.99 / 1–12 exp / 0–0.95)
-//   CC22: MODE     0–42→Waveshape, 43–84→Wavefold, 85–127→Phaser
-//   CC23: BYPASS   0–63→active, 64–127→bypassed
-//   CC24: EXP      0–127 → 0.0–1.0 direct envelope (always active, no SENS gate)
+//   CC33: VOL      0–127 → 0.0–1.5 linear
+//   CC34: SENS     0–127 → 1.0–20.0 logarithmic
+//   CC35: FREQ     0–127 → log-mapped per mode (100–8000 / 40–5000)
+//   CC36: RES      0–127 → mode-dependent (0–0.99 / 1–12 exp / 0–0.95)
+//   CC37: MODE     0–42→Waveshape, 43–84→Wavefold, 85–127→Phaser
+//   CC38: BYPASS   0–63→active, 64–127→bypassed
+//   CC39: EXP      0–127 → 0.0–1.0 direct envelope (always active, no SENS gate)
 //
 // MIDI PC (Ch 1):  In program mode: saves current settings to that program slot.
 //                  Outside program mode: recalls preset from that program slot.
@@ -60,7 +60,7 @@ int             switch1[2], switch2[2], switch3[2], dip[4];
 
 Led led1, led2;
 
-// External envelope control (expression pedal / MIDI CC24)
+// External envelope control (expression pedal / MIDI CC39)
 float externalEnv    = 0.0f;
 bool  midiEnvActive  = false;
 float midiEnvValue   = 0.0f;
@@ -73,12 +73,12 @@ static const float SENS_MIN_THRESHOLD = 1.05f;
 // ============================================================
 // MIDI CC Control — real-time parameter override
 // ============================================================
-// Indices: 0=VOL(CC18), 1=SENS(CC19), 2=FREQ(CC20), 3=RES(CC21)
+// Indices: 0=VOL(CC33), 1=SENS(CC34), 2=FREQ(CC35), 3=RES(CC36)
 bool  midiCCActive[4]       = {false, false, false, false};
 float midiCCValue[4]        = {0.0f, 0.0f, 0.0f, 0.0f};
 float midiCCKnobSnapshot[4] = {0.0f, 0.0f, 0.0f, 0.0f}; // Knob position when CC received
 
-// MIDI mode override (CC22)
+// MIDI mode override (CC37)
 bool midiModeActive = false;
 int  midiMode       = 0;
 
@@ -423,19 +423,19 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
     }
 
     // MIDI CC overrides (highest priority — applied after preset/knob read)
-    if (midiCCActive[0]) { // CC18: VOL
+    if (midiCCActive[0]) { // CC33: VOL
         vLevel = midiCCValue[0] * 1.5f;
     }
-    if (midiCCActive[1]) { // CC19: SENS (logarithmic 1-20)
+    if (midiCCActive[1]) { // CC34: SENS (logarithmic 1-20)
         vSense = powf(20.0f, midiCCValue[1]);
     }
-    if (midiCCActive[2]) { // CC20: FREQ (log-mapped per mode)
+    if (midiCCActive[2]) { // CC35: FREQ (log-mapped per mode)
         float nv = midiCCValue[2];
         vFreq       = 100.0f * powf(8000.0f / 100.0f, nv);
         vFreqWF     = 100.0f * powf(8000.0f / 100.0f, nv);
         vPhaserFreq = 40.0f * powf(5000.0f / 40.0f, nv);
     }
-    if (midiCCActive[3]) { // CC21: RES/FOLD/FDBK (mode-dependent)
+    if (midiCCActive[3]) { // CC36: RES/FOLD/FDBK (mode-dependent)
         float nv = midiCCValue[3];
         vRes      = nv * 0.99f;
         vFold     = 1.0f + (12.0f - 1.0f) * nv * nv;
@@ -443,7 +443,7 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
     }
 
     // Read expression pedal and compute external envelope source
-    // MIDI CC24 (EXP) always active; physical expression pedal gated by SENS at minimum
+    // MIDI CC39 (EXP) always active; physical expression pedal gated by SENS at minimum
     float vexpression = pExpression.Process();
     if (midiEnvActive) {
         externalEnv = midiEnvValue;
@@ -630,7 +630,7 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
 }
 
 
-// MIDI message handler — CC18-24 control parameters; PC handles presets
+// MIDI message handler — CC33-39 control parameters; PC handles presets
 // Only responds to Channel 1 to prevent noise on other channels from triggering actions
 void HandleMidiMessage(MidiEvent m)
 {
@@ -645,27 +645,27 @@ void HandleMidiMessage(MidiEvent m)
             ControlChangeEvent p = m.AsControlChange();
             switch(p.control_number)
             {
-                case 18: // CC18: VOL
+                case 33: // CC33: VOL
                     midiCCActive[0] = true;
                     midiCCValue[0] = p.value / 127.0f;
                     midiCCKnobSnapshot[0] = hw.knob[Funbox::KNOB_1].Value();
                     break;
-                case 19: // CC19: SENS
+                case 34: // CC34: SENS
                     midiCCActive[1] = true;
                     midiCCValue[1] = p.value / 127.0f;
                     midiCCKnobSnapshot[1] = hw.knob[Funbox::KNOB_4].Value();
                     break;
-                case 20: // CC20: FREQ
+                case 35: // CC35: FREQ
                     midiCCActive[2] = true;
                     midiCCValue[2] = p.value / 127.0f;
                     midiCCKnobSnapshot[2] = hw.knob[Funbox::KNOB_2].Value();
                     break;
-                case 21: // CC21: RES/FOLD/FDBK
+                case 36: // CC36: RES/FOLD/FDBK
                     midiCCActive[3] = true;
                     midiCCValue[3] = p.value / 127.0f;
                     midiCCKnobSnapshot[3] = hw.knob[Funbox::KNOB_3].Value();
                     break;
-                case 22: // CC22: MODE
+                case 37: // CC37: MODE
                     midiModeActive = true;
                     if (p.value < 43)
                         midiMode = 0; // Waveshape
@@ -674,11 +674,11 @@ void HandleMidiMessage(MidiEvent m)
                     else
                         midiMode = 2; // Phaser
                     break;
-                case 23: // CC23: BYPASS (0–63 = active, 64–127 = bypassed)
+                case 38: // CC38: BYPASS (0–63 = active, 64–127 = bypassed)
                     bypass = (p.value >= 64);
                     led2.Set(bypass ? 0.0f : 1.0f);
                     break;
-                case 24: // CC24: EXP (envelope)
+                case 39: // CC39: EXP (envelope)
                     if (p.value == 0) {
                         midiEnvActive = false;
                         midiEnvValue  = 0.0f;

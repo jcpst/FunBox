@@ -1,6 +1,6 @@
 # Ceres
 
-An envelope filter / waveshape / wavefold / phaser effect for the Funbox platform. Ceres tracks your playing dynamics and uses the input amplitude to drive resonant filters, wavefolding, and phaser sweeps, producing synthy, auto-wah-style sounds. An expression pedal or MIDI CC24 can override the envelope follower for direct control. All parameters are fully programmable via MIDI CC.
+An envelope filter / waveshape / wavefold / phaser effect for the Funbox platform. Ceres tracks your playing dynamics and uses the input amplitude to drive resonant filters, wavefolding, and phaser sweeps, producing synthy, auto-wah-style sounds. An expression pedal or MIDI CC39 can override the envelope follower for direct control. All parameters are fully programmable via MIDI CC.
 
 ## Modes
 
@@ -30,18 +30,18 @@ All main parameters can be controlled in real time via MIDI Continuous Controlle
 
 | CC  | Parameter | Range / Mapping |
 |-----|-----------|-----------------|
-| 18  | **VOL**   | 0–127 → 0.0–1.0 linear |
-| 19  | **SENS**  | 0–127 → 1.0–20.0 logarithmic |
-| 20  | **FREQ**  | 0–127 → log-mapped per mode (100–8000 Hz / 40–5000 Hz) |
-| 21  | **RES**   | 0–127 → mode-dependent (Res 0–0.99 / Fold 1–12× exp / Fdbk 0–0.95) |
-| 22  | **MODE**  | 0–42 → Waveshape, 43–84 → Wavefold, 85–127 → Phaser |
-| 23  | **BYPASS**| 0–63 → Active, 64–127 → Bypassed |
-| 24  | **EXP**   | 0–127 → 0.0–1.0 direct envelope control (always active, no SENS gate) |
+| 33  | **VOL**   | 0–127 → 0.0–1.0 linear |
+| 34  | **SENS**  | 0–127 → 1.0–20.0 logarithmic |
+| 35  | **FREQ**  | 0–127 → log-mapped per mode (100–8000 Hz / 40–5000 Hz) |
+| 36  | **RES**   | 0–127 → mode-dependent (Res 0–0.99 / Fold 1–12× exp / Fdbk 0–0.95) |
+| 37  | **MODE**  | 0–42 → Waveshape, 43–84 → Wavefold, 85–127 → Phaser |
+| 38  | **BYPASS**| 0–63 → Active, 64–127 → Bypassed |
+| 39  | **EXP**   | 0–127 → 0.0–1.0 direct envelope control (always active, no SENS gate) |
 
 **Notes:**
-- CC24 (EXP) directly controls the envelope and is always active regardless of the SENS value. This differs from the physical expression pedal, which requires SENS at minimum.
-- CC22 (MODE) is sticky — it stays at the commanded mode until the physical Switch 1 is moved.
-- CC23 (BYPASS) sets bypass state absolutely (not a toggle).
+- CC39 (EXP) directly controls the envelope and is always active regardless of the SENS value. This differs from the physical expression pedal, which requires SENS at minimum.
+- CC37 (MODE) is sticky — it stays at the commanded mode until the physical Switch 1 is moved.
+- CC38 (BYPASS) sets bypass state absolutely (not a toggle).
 
 ## MIDI Presets
 
